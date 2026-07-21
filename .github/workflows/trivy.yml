@@ -21,6 +21,9 @@ jobs:
           format: 'json'
           output: 'trivy-results.json'
           severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true          # αγνοεί CVEs χωρίς διαθέσιμο fix (δεν μπορείς να κάνεις κάτι ούτως ή άλλως)
+          skip-dirs: 'tests,node_modules,vendor,.venv'
+          trivyignores: '.trivyignore'  # χειροκίνητο ignore-list για συγκεκριμένα CVEs που δεν αφορούν
 
       - name: Upload Trivy results as artifact
         uses: actions/upload-artifact@v4
@@ -44,13 +47,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # χρειάζεται πλήρες git history για σωστό scan
+          fetch-depth: 0
 
-      - name: Run Gitleaks
+      - name: Run Gitleaks with config & baseline
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: true   # δεν κόβει το pipeline, απλά αναφέρει
+          GITLEAKS_CONFIG: .gitleaks.toml         # allowlist για dummy/example keys, test paths
+          GITLEAKS_BASELINE_PATH: gitleaks-baseline.json  # αγνοεί ήδη γνωστά/παλιά ευρήματα
+        continue-on-error: true
 
       - name: Send Gitleaks report to Webhook
         if: always()
@@ -73,10 +78,30 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Run Semgrep & Save Output as JSON
-        run: semgrep scan --config p/python --config p/flask --config p/security-audit --json --output semgrep-results.json .
+      - name: Run Semgrep (baseline diff on PRs, full scan on push to main)
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # Σε PR: δείχνει ΜΟΝΟ νέα ευρήματα σε σχέση με το base branch
+            semgrep ci \
+              --baseline-commit=${{ github.event.pull_request.base.sha }} \
+              --config p/python --config p/flask --config p/security-audit \
+              --exclude tests --exclude node_modules --exclude vendor \
+              --json --output semgrep-raw.json
+          else
+            semgrep scan \
+              --config p/python --config p/flask --config p/security-audit \
+              --exclude tests --exclude node_modules --exclude vendor \
+              --json --output semgrep-raw.json
+          fi
         continue-on-error: true
+
+      - name: Filter out LOW confidence findings (reduce noise)
+        run: |
+          jq '.results |= map(select(.extra.metadata.confidence != "LOW"))' \
+            semgrep-raw.json > semgrep-results.json
 
       - name: Upload Semgrep results as artifact
         uses: actions/upload-artifact@v4
