@@ -1,0 +1,27 @@
+name: Trivy Security Scan
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  trivy-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy & Save Output as JSON
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          format: 'json'
+          output: 'trivy-results.json'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Send JSON to Webhook Tester
+        run: |
+          curl -X POST "https://webhook.site/9002d09a-22d9-425b-a385-dfd85aa88019" \
+            -H "Content-Type: application/json" \
+            -H "X-Client-Name: Giannhs-Sql-Project" \
+            -d @trivy-results.json
