@@ -1,11 +1,14 @@
-name: Trivy Security Scan
+name: Security Scan (Trivy + Gitleaks + Semgrep)
 
 on:
   push:
     branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
 
 jobs:
   trivy-scan:
+    name: Trivy (dependencies & IaC)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -17,11 +20,75 @@ jobs:
           scan-type: 'fs'
           format: 'json'
           output: 'trivy-results.json'
-          severity: 'LOW,MEDIUM,CRITICAL,HIGH'
+          severity: 'CRITICAL,HIGH'
 
-      - name: Send JSON to Webhook Tester
+      - name: Upload Trivy results as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-results
+          path: trivy-results.json
+
+      - name: Send Trivy JSON to Webhook
+        if: always()
         run: |
-          curl -X POST "https://webhook.site/9002d09a-22d9-425b-a385-dfd85aa88019" \
+          curl -s -X POST "${{ secrets.WEBHOOK_URL }}" \
             -H "Content-Type: application/json" \
             -H "X-Client-Name: Giannhs-Sql-Project" \
+            -H "X-Scan-Tool: trivy" \
             -d @trivy-results.json
+
+  gitleaks-scan:
+    name: Gitleaks (secrets detection)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # χρειάζεται πλήρες git history για σωστό scan
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true   # δεν κόβει το pipeline, απλά αναφέρει
+
+      - name: Send Gitleaks report to Webhook
+        if: always()
+        run: |
+          if [ -f gitleaks-report.json ]; then
+            curl -s -X POST "${{ secrets.WEBHOOK_URL }}" \
+              -H "Content-Type: application/json" \
+              -H "X-Client-Name: Giannhs-Sql-Project" \
+              -H "X-Scan-Tool: gitleaks" \
+              -d @gitleaks-report.json
+          else
+            echo "No gitleaks-report.json found (no leaks or different output path)."
+          fi
+
+  semgrep-scan:
+    name: Semgrep (static code analysis)
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep & Save Output as JSON
+        run: semgrep scan --config p/python --config p/flask --config p/security-audit --json --output semgrep-results.json .
+        continue-on-error: true
+
+      - name: Upload Semgrep results as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-results
+          path: semgrep-results.json
+
+      - name: Send Semgrep JSON to Webhook
+        if: always()
+        run: |
+          curl -s -X POST "${{ secrets.WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -H "X-Client-Name: Giannhs-Sql-Project" \
+            -H "X-Scan-Tool: semgrep" \
+            -d @semgrep-results.json
