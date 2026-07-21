@@ -17,7 +17,7 @@ jobs:
           scan-type: 'fs'
           format: 'json'
           output: 'trivy-results.json'
-          severity: 'CRITICAL,HIGH'
+          severity: 'LOW,MEDIUM,CRITICAL,HIGH'
 
       - name: Send JSON to Webhook Tester
         run: |
