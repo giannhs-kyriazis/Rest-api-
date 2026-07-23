@@ -1,0 +1,8 @@
+# .gitleaks.toml
+# Allowlist για dummy/example keys και μη-σχετικά paths.
+[allowlist]
+description = "Global allowlist"
+paths = [
+  '''tests/.*''',
+  '''.*\.example$'''
+]
