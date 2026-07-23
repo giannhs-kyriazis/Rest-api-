@@ -1,0 +1,129 @@
+
+name: Security Scan (Trivy + Gitleaks + Semgrep)
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  trivy-scan:
+    name: Trivy (dependencies & IaC)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy & Save Output as JSON
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          format: 'json'
+          output: 'trivy-results.json'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+          skip-dirs: 'tests,node_modules,vendor,.venv'
+          trivyignores: '.trivyignore'
+
+      - name: Upload Trivy results as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-results
+          path: trivy-results.json
+
+      - name: Send Trivy JSON to Webhook
+        if: always()
+        run: |
+          if [ -f trivy-results.json ]; then
+            curl -s --max-time 90 -X POST "https://trivy-scanner-backend.onrender.com/api/trivy-webhook" \
+              -H "Content-Type: application/json" \
+              -H "X-Webhook-Secret: ${{ secrets.TRIVY_WEBHOOK_SECRET }}" \
+              -H "X-Scan-Tool: trivy" \
+              -H "X-Repo: ${{ github.repository }}" \
+              -H "X-Commit: ${{ github.sha }}" \
+              -d @trivy-results.json
+          fi
+
+  gitleaks-scan:
+    name: Gitleaks (secrets detection)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks with config & baseline
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+          GITLEAKS_BASELINE_PATH: gitleaks-baseline.json
+        continue-on-error: true
+
+      - name: Send Gitleaks report to Webhook
+        if: always()
+        run: |
+          if [ -f gitleaks-report.json ]; then
+            curl -s --max-time 90 -X POST "https://trivy-scanner-backend.onrender.com/api/trivy-webhook" \
+              -H "Content-Type: application/json" \
+              -H "X-Webhook-Secret: ${{ secrets.TRIVY_WEBHOOK_SECRET }}" \
+              -H "X-Scan-Tool: gitleaks" \
+              -H "X-Repo: ${{ github.repository }}" \
+              -H "X-Commit: ${{ github.sha }}" \
+              -d @gitleaks-report.json
+          else
+            echo "No gitleaks-report.json found (no leaks or different output path)."
+          fi
+
+  semgrep-scan:
+    name: Semgrep (static code analysis)
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Semgrep (baseline diff on PRs, full scan on push to main)
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            semgrep ci \
+              --baseline-commit=${{ github.event.pull_request.base.sha }} \
+              --config p/python --config p/flask --config p/security-audit \
+              --exclude tests --exclude node_modules --exclude vendor \
+              --json --output semgrep-raw.json
+          else
+            semgrep scan \
+              --config p/python --config p/flask --config p/security-audit \
+              --exclude tests --exclude node_modules --exclude vendor \
+              --json --output semgrep-raw.json
+          fi
+        continue-on-error: true
+
+      - name: Filter out LOW confidence findings (reduce noise)
+        run: |
+          jq '.results |= map(select(.extra.metadata.confidence != "LOW"))' \
+            semgrep-raw.json > semgrep-results.json
+
+      - name: Upload Semgrep results as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-results
+          path: semgrep-results.json
+
+      - name: Send Semgrep JSON to Webhook
+        if: always()
+        run: |
+          if [ -f semgrep-results.json ]; then
+            curl -s --max-time 90 -X POST "https://trivy-scanner-backend.onrender.com/api/trivy-webhook" \
+              -H "Content-Type: application/json" \
+              -H "X-Webhook-Secret: ${{ secrets.TRIVY_WEBHOOK_SECRET }}" \
+              -H "X-Scan-Tool: semgrep" \
+              -H "X-Repo: ${{ github.repository }}" \
+              -H "X-Commit: ${{ github.sha }}" \
+              -d @semgrep-results.json
+          fi
